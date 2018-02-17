@@ -22,9 +22,9 @@
 #
 
 
-# Use CentOS as base for the build
-ARG CENTOS_VERSION=centos7
-FROM centos:${CENTOS_VERSION} AS builder
+# Use Ubuntu as base for the build
+ARG UBUNTU_VERSION=artful
+FROM ubuntu:${UBUNTU_VERSION} AS builder
 
 # Base directory for installed build artifacts.
 # Due to limitations of the Docker image build process, this value is
@@ -37,41 +37,47 @@ ARG BUILD_DIR=/tmp/guacd-docker-BUILD
 ARG BUILD_DEPENDENCIES="              \
         autoconf                      \
         automake                      \
-        cairo-devel                   \
-        freerdp-devel                 \
         gcc                           \
-        libjpeg-turbo-devel           \
-        libssh2-devel                 \
+        libcairo2-dev                 \
+        libfreerdp-dev                \
+        libjpeg-turbo8-dev            \
+        libossp-uuid-dev              \
+        libpango1.0-dev               \
+        libpulse-dev                  \
+        libssh2-1-dev                 \
+        libssl-dev                    \
+        libtelnet-dev                 \
         libtool                       \
-        libtelnet-devel               \
-        libvorbis-devel               \
-        libvncserver-devel            \
-        libwebp-devel                 \
-        make                          \
-        pango-devel                   \
-        pulseaudio-libs-devel         \
-        uuid-devel"
+        libvncserver-dev              \
+        libwebp-dev                   \
+        make"
 
 # Build time environment
 ENV LC_ALL=en_US.UTF-8
 
 # Bring build environment up to date and install build dependencies
-RUN yum -y update                        && \
-    yum -y install epel-release          && \
-    yum -y install $BUILD_DEPENDENCIES   && \
-    yum clean all
+RUN apt-get update                         && \
+    apt-get install -y $BUILD_DEPENDENCIES && \
+    rm -rf /var/lib/apt/lists/*
 
 # Add configuration scripts
-COPY src/guacd-docker/bin /opt/guacd/bin/
+COPY src/guacd-docker/bin "${PREFIX_DIR}/bin/"
 
 # Copy source to container for sake of build
 COPY . "$BUILD_DIR"
 
 # Build guacamole-server from local source
-RUN /opt/guacd/bin/build-guacd.sh "$BUILD_DIR" "$PREFIX_DIR"
+RUN ${PREFIX_DIR}/bin/build-guacd.sh "$BUILD_DIR" "$PREFIX_DIR"
 
-# Use same CentOS as the base for the runtime image
-FROM centos:${CENTOS_VERSION}
+# Record the packages of all runtime library dependencies
+RUN ${PREFIX_DIR}/bin/list-dependencies.sh    \
+        ${PREFIX_DIR}/sbin/guacd              \
+        ${PREFIX_DIR}/lib/libguac-client-*.so \
+        ${PREFIX_DIR}/lib/freerdp/guac*.so    \
+        > ${PREFIX_DIR}/DEPENDENCIES
+
+# Use same Ubuntu as the base for the runtime image
+FROM ubuntu:${UBUNTU_VERSION}
 
 # Base directory for installed build artifacts.
 # Due to limitations of the Docker image build process, this value is
@@ -84,39 +90,24 @@ ARG PREFIX_DIR=/usr/local/guacamole
 ENV LC_ALL=en_US.UTF-8
 
 ARG RUNTIME_DEPENDENCIES="            \
-        cairo                         \
-        dejavu-sans-mono-fonts        \
-        freerdp                       \
-        freerdp-plugins               \
         ghostscript                   \
-        libjpeg-turbo                 \
-        libssh2                       \
-        liberation-mono-fonts         \
-        libtelnet                     \
-        libvorbis                     \
-        libvncserver                  \
-        libwebp                       \
-        pango                         \
-        pulseaudio-libs               \
-        terminus-fonts                \
-        uuid"
-
-# Bring runtime environment up to date and install runtime dependencies
-RUN yum -y update                          && \
-    yum -y install epel-release            && \
-    yum -y install $RUNTIME_DEPENDENCIES   && \
-    yum clean all                          && \
-    rm -rf /var/cache/yum
+        libfreerdp-plugins-standard   \
+        fonts-liberation              \
+        fonts-dejavu                  \
+        xfonts-terminus"
 
 # Copy build artifacts into this stage
 COPY --from=builder ${PREFIX_DIR} ${PREFIX_DIR}
 
+# Bring runtime environment up to date and install runtime dependencies
+RUN apt-get update                                          && \
+    apt-get install -y $RUNTIME_DEPENDENCIES                && \
+    apt-get install -y $(cat "${PREFIX_DIR}"/DEPENDENCIES)  && \
+    rm -rf /var/lib/apt/lists/*
+
 # Link FreeRDP plugins into proper path
-RUN FREERDP_DIR=$(dirname \
-        $(rpm -ql freerdp-libs | grep 'libfreerdp.*\.so' | head -n1)) && \
-    FREERDP_PLUGIN_DIR="${FREERDP_DIR}/freerdp" && \
-    mkdir -p "$FREERDP_PLUGIN_DIR" && \
-    ln -s "$PREFIX_DIR"/lib/freerdp/*.so "$FREERDP_PLUGIN_DIR"
+RUN ${PREFIX_DIR}/bin/link-freerdp-plugins.sh \
+        ${PREFIX_DIR}/lib/freerdp/guac*.so
 
 # Expose the default listener port
 EXPOSE 4822
@@ -127,4 +118,3 @@ EXPOSE 4822
 # PREFIX_DIR build argument.
 #
 CMD [ "/usr/local/guacamole/sbin/guacd", "-b", "0.0.0.0", "-f" ]
-
